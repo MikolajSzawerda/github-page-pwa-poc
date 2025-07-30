@@ -1,15 +1,15 @@
 {
-  "name": "Github Page PWA",
-  "short_name": "GPPWA",
-  "description": "Github Page as a Progressive Web App",
-  "scope": "/github-page-pwa/",
-  "start_url": "/github-page-pwa/",
-  "background_color": "#ffffff",
-  "theme_color": "#ffffff",
+  "name": "Geolocation Line Walker PWA",
+  "short_name": "LineWalker",
+  "description": "A Progressive Web App that creates a walking line based on your location and orientation",
+  "scope": "./",
+  "start_url": "./",
+  "background_color": "#2c3e50",
+  "theme_color": "#3498db",
   "display": "standalone", 
   "icons": [
       {
-        "src": "/github-page-pwa/img/icon.png",
+        "src": "img/icon.png",
         "type": "image/png",
         "sizes": "700x700"
       }

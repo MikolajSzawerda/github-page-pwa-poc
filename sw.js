@@ -1,15 +1,33 @@
-var GHPATH = '/github-page-pwa';
-var APP_PREFIX = 'gppwa_';
+// Detect if running locally or on GitHub Pages
+const isLocal = self.location.hostname === 'localhost' || 
+                self.location.hostname === '127.0.0.1' || 
+                self.location.hostname === '';
+
+var GHPATH = isLocal ? '' : '/github-page-pwa-poc';
+var APP_PREFIX = 'glw_';
 var VERSION = 'version_002';
-var URLS = [    
+
+// Dynamic URL list based on environment
+var URLS = isLocal ? [
+  './',
+  './index.html',
+  './css/styles.css',
+  './img/icon.png',
+  './js/app.js',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+] : [
   `${GHPATH}/`,
   `${GHPATH}/index.html`,
   `${GHPATH}/css/styles.css`,
   `${GHPATH}/img/icon.png`,
-  `${GHPATH}/js/app.js`
-]
+  `${GHPATH}/js/app.js`,
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
+  'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'
+];
 
 var CACHE_NAME = APP_PREFIX + VERSION
+
 self.addEventListener('fetch', function (e) {
   console.log('Fetch request : ' + e.request.url);
   e.respondWith(
