@@ -15,9 +15,14 @@ class GeolocationLineWalker {
         this.isInitialized = false;
         this.accuracyCircle = null;
         this.headingArrow = null;
-        this.locationAttempts = 0;
-        this.maxLocationAttempts = 5;
-        this.requiredAccuracy = 10; // Require accuracy within 10 meters
+        
+        // Simplified location settings - much more user-friendly
+        this.requiredAccuracy = 50; // More reasonable 50m instead of 10m
+        this.maxLocationWait = 8000; // Only wait 8 seconds max
+        this.lastKnownPosition = this.loadCachedPosition();
+        this.locationSmoothing = [];
+        this.maxSmoothingPoints = 3;
+        
         this.isLocal = window.location.hostname === 'localhost' || 
                       window.location.hostname === '127.0.0.1' || 
                       window.location.hostname === '';
@@ -34,32 +39,58 @@ class GeolocationLineWalker {
     init() {
         this.initMap();
         this.setupEventListeners();
-        
-        // Add debugging info for local development
-        if (this.isLocal) {
-            console.log('🔧 Running in local development mode');
-            console.log('📍 Location:', window.location.href);
-            console.log('🌐 Geolocation available:', !!navigator.geolocation);
-            console.log('🔒 HTTPS:', window.location.protocol === 'https:');
-        }
-        
         this.requestLocation();
     }
     
+    loadCachedPosition() {
+        try {
+            const cached = localStorage.getItem('lastPosition');
+            if (cached) {
+                const pos = JSON.parse(cached);
+                // Only use if less than 10 minutes old
+                if (Date.now() - pos.timestamp < 600000) {
+                    return pos;
+                }
+            }
+        } catch (e) {
+            console.warn('Could not load cached position');
+        }
+        return null;
+    }
+    
+    cachePosition(position) {
+        try {
+            const toCache = {
+                coords: {
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                    accuracy: position.coords.accuracy
+                },
+                timestamp: Date.now()
+            };
+            localStorage.setItem('lastPosition', JSON.stringify(toCache));
+        } catch (e) {
+            console.warn('Could not cache position');
+        }
+    }
+    
     initMap() {
-        // Default to a nice location (San Francisco) for demo
-        const defaultLat = 37.7749;
-        const defaultLng = -122.4194;
+        // Start with cached position if available
+        const defaultLat = this.lastKnownPosition ? this.lastKnownPosition.coords.latitude : 37.7749;
+        const defaultLng = this.lastKnownPosition ? this.lastKnownPosition.coords.longitude : -122.4194;
         
         this.map = L.map('map').setView([defaultLat, defaultLng], 18);
         
-        // Add tile layer (using OpenStreetMap)
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '© OpenStreetMap contributors',
             maxZoom: 19
         }).addTo(this.map);
         
-        this.updateStatus('Map initialized. Requesting high-accuracy location...');
+        if (this.lastKnownPosition) {
+            this.updateStatus('Using cached location. Getting fresh GPS...');
+        } else {
+            this.updateStatus('Getting your location...');
+        }
     }
     
     setupEventListeners() {
@@ -71,7 +102,6 @@ class GeolocationLineWalker {
             this.centerMapOnUser();
         });
         
-        // Add demo mode button for local development
         if (this.isLocal) {
             const demoButton = document.createElement('button');
             demoButton.textContent = 'Demo Mode';
@@ -85,26 +115,39 @@ class GeolocationLineWalker {
     
     requestLocation() {
         if (!navigator.geolocation) {
-            this.updateStatus('❌ Geolocation not supported by this browser');
+            this.updateStatus('❌ Geolocation not supported');
             if (this.isLocal) {
-                this.updateStatus('💡 Try demo mode or use a modern browser');
+                this.updateStatus('💡 Try demo mode');
             }
             return;
         }
         
-        this.locationAttempts++;
-        this.updateStatus(`📍 Getting high-accuracy location... (Attempt ${this.locationAttempts}/${this.maxLocationAttempts})`);
+        // If we have cached position, use it immediately and improve in background
+        if (this.lastKnownPosition) {
+            this.handleInitialPosition(this.lastKnownPosition);
+            this.updateStatus('📍 Using cached location. Improving accuracy...');
+        }
         
-        // Ultra high accuracy settings
+        // Much more reasonable location settings
         const options = {
             enableHighAccuracy: true,
-            timeout: 30000, // 30 seconds timeout
-            maximumAge: 0 // Always get fresh location
+            timeout: this.maxLocationWait,
+            maximumAge: 30000 // Allow 30-second old location
         };
         
         navigator.geolocation.getCurrentPosition(
-            (position) => this.handleLocationResult(position),
-            (error) => this.handleLocationError(error),
+            (position) => {
+                this.cachePosition(position);
+                this.handleLocationResult(position);
+            },
+            (error) => {
+                if (this.lastKnownPosition) {
+                    // If we have cached position and current request fails, continue with cached
+                    this.updateStatus('Using cached location (GPS unavailable)');
+                } else {
+                    this.handleLocationError(error);
+                }
+            },
             options
         );
     }
@@ -112,42 +155,29 @@ class GeolocationLineWalker {
     handleLocationResult(position) {
         const accuracy = position.coords.accuracy;
         
-        console.log(`📍 Location received:`, {
-            lat: position.coords.latitude,
-            lng: position.coords.longitude,
-            accuracy: accuracy,
-            timestamp: new Date(position.timestamp)
-        });
-        
-        // Check if accuracy is good enough
-        if (accuracy > this.requiredAccuracy && this.locationAttempts < this.maxLocationAttempts && !this.isLocal) {
-            this.updateStatus(`⚠️ Accuracy: ${accuracy.toFixed(1)}m (need ≤${this.requiredAccuracy}m). Retrying...`);
-            
-            // Wait a bit and try again
-            setTimeout(() => {
-                this.requestLocation();
-            }, 2000);
-            return;
+        // Much more lenient - accept any reasonable accuracy
+        if (accuracy <= this.requiredAccuracy || accuracy <= 100) {
+            this.updateStatus(`✅ Location ready! (±${accuracy.toFixed(0)}m)`);
+            this.handleInitialPosition(position);
+        } else {
+            // Even with poor accuracy, still proceed but warn user
+            this.updateStatus(`⚠️ Poor GPS signal (±${accuracy.toFixed(0)}m) - trying anyway`);
+            this.handleInitialPosition(position);
         }
-        
-        // Accept the position
-        this.updateStatus(`✅ Location acquired! Accuracy: ${accuracy.toFixed(1)}m`);
-        this.handleInitialPosition(position);
     }
     
     startDemoMode() {
-        // Create a demo position in San Francisco
         const demoPosition = {
             coords: {
                 latitude: 37.7749,
                 longitude: -122.4194,
                 accuracy: 5,
-                heading: 45 // Demo heading (NE direction)
+                heading: 45
             },
             timestamp: Date.now()
         };
         
-        this.updateStatus('🎮 Demo mode activated!');
+        this.updateStatus('🎮 Demo mode');
         this.currentHeading = 45;
         this.updateHeadingDisplay(45);
         this.handleInitialPosition(demoPosition);
@@ -160,15 +190,30 @@ class GeolocationLineWalker {
         const accuracy = position.coords.accuracy;
         
         this.updateLocationDisplay(lat, lng, accuracy);
-        this.map.setView([lat, lng], 19); // High zoom for accuracy
+        this.map.setView([lat, lng], 18);
         
-        // Update heading if available from position
+        // Update heading if available
         if (position.coords.heading !== null && position.coords.heading !== undefined) {
             this.currentHeading = position.coords.heading;
             this.updateHeadingDisplay(this.currentHeading);
         }
         
-        // Add user marker
+        // Create or update user marker (fix multiple markers bug)
+        this.createUserMarker(lat, lng);
+        
+        // Create accuracy circle
+        this.createAccuracyCircle(lat, lng, accuracy);
+        
+        // Start orientation detection
+        this.requestDeviceOrientation();
+    }
+    
+    createUserMarker(lat, lng) {
+        // Remove existing marker to prevent duplicates
+        if (this.userMarker) {
+            this.map.removeLayer(this.userMarker);
+        }
+        
         this.userMarker = L.marker([lat, lng], {
             icon: L.divIcon({
                 className: 'user-marker',
@@ -177,8 +222,13 @@ class GeolocationLineWalker {
                 iconAnchor: [8, 8]
             })
         }).addTo(this.map);
+    }
+    
+    createAccuracyCircle(lat, lng, accuracy) {
+        if (this.accuracyCircle) {
+            this.map.removeLayer(this.accuracyCircle);
+        }
         
-        // Add accuracy circle
         this.accuracyCircle = L.circle([lat, lng], {
             radius: accuracy,
             color: '#3498db',
@@ -186,14 +236,10 @@ class GeolocationLineWalker {
             fillOpacity: 0.1,
             weight: 2
         }).addTo(this.map);
-        
-        // Request device orientation for heading
-        this.requestDeviceOrientation();
     }
     
     requestDeviceOrientation() {
         if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-            // iOS 13+ permission request
             DeviceOrientationEvent.requestPermission()
                 .then(response => {
                     if (response === 'granted') {
@@ -204,7 +250,6 @@ class GeolocationLineWalker {
                 })
                 .catch(() => this.createLineWithDefaultHeading());
         } else if (window.DeviceOrientationEvent) {
-            // Android and older iOS
             this.setupOrientationListener();
         } else {
             this.createLineWithDefaultHeading();
@@ -214,16 +259,13 @@ class GeolocationLineWalker {
     setupOrientationListener() {
         let orientationTimeout = setTimeout(() => {
             this.createLineWithDefaultHeading();
-        }, 5000); // Longer timeout for better heading detection
+        }, 3000); // Shorter timeout
         
         const handleOrientation = (event) => {
             if (this.initialHeading === null && event.alpha !== null) {
                 clearTimeout(orientationTimeout);
-                // FIX: Invert the heading to fix opposite direction bug
-                // Device orientation alpha goes clockwise, but compass bearing goes counter-clockwise
                 this.initialHeading = (360 - event.alpha) % 360;
                 this.currentHeading = this.initialHeading;
-                console.log(`🧭 Initial heading: device=${event.alpha}°, corrected=${this.initialHeading}°`);
                 this.updateHeadingDisplay(this.currentHeading);
                 this.createWalkingLine();
                 window.removeEventListener('deviceorientationabsolute', handleOrientation);
@@ -231,31 +273,29 @@ class GeolocationLineWalker {
             }
         };
         
-        // Continue listening for heading updates
+        // Lighter continuous updates
         const handleOrientationUpdate = (event) => {
-            if (event.alpha !== null) {
-                // FIX: Apply same correction to continuous updates
+            if (event.alpha !== null && this.isInitialized) {
                 this.currentHeading = (360 - event.alpha) % 360;
                 this.updateHeadingDisplay(this.currentHeading);
                 this.updateHeadingArrow();
             }
         };
         
-        // Try absolute orientation first (more accurate)
         window.addEventListener('deviceorientationabsolute', handleOrientation);
         window.addEventListener('deviceorientation', handleOrientation);
         
-        // Set up continuous heading updates after initial line creation
+        // Delayed continuous updates
         setTimeout(() => {
             window.addEventListener('deviceorientationabsolute', handleOrientationUpdate);
             window.addEventListener('deviceorientation', handleOrientationUpdate);
-        }, 6000);
+        }, 4000);
         
-        this.updateStatus('🧭 Point your device in the direction you want to walk...');
+        this.updateStatus('🧭 Point device where you want to walk...');
     }
     
     createLineWithDefaultHeading() {
-        this.initialHeading = 0; // Default to North
+        this.initialHeading = 0;
         this.currentHeading = 0;
         this.updateHeadingDisplay(0);
         this.createWalkingLine();
@@ -268,17 +308,12 @@ class GeolocationLineWalker {
         const startLng = this.currentPosition.coords.longitude;
         const heading = this.initialHeading || 0;
         
-        console.log(`🎯 Creating line: lat=${startLat}, lng=${startLng}, heading=${heading}°`);
-        
-        // Create 5 points, each 10 meters apart
         this.linePoints = [];
         for (let i = 0; i < 5; i++) {
             const point = this.calculateDestination(startLat, startLng, heading, i * 10);
             this.linePoints.push(point);
-            console.log(`📍 Point ${i}: ${point.lat.toFixed(6)}, ${point.lng.toFixed(6)} (${i * 10}m)`);
         }
         
-        // Draw the walking line
         this.drawWalkingLine();
         this.drawLineMarkers();
         this.addHeadingArrow();
@@ -286,18 +321,18 @@ class GeolocationLineWalker {
         this.isInitialized = true;
         document.getElementById('reset-btn').disabled = false;
         
-        // Start watching position with high accuracy
+        // Start position tracking with reduced frequency
         this.startPositionWatch();
         
-        this.updateStatus('✅ Line created! Start walking towards the points (40m total).');
+        this.updateStatus('✅ Ready to walk! (40m total)');
     }
     
     calculateDestination(lat, lng, bearing, distance) {
-        const R = 6371000; // Earth's radius in meters
-        const δ = distance / R; // angular distance
-        const φ1 = lat * Math.PI / 180; // latitude in radians
-        const λ1 = lng * Math.PI / 180; // longitude in radians
-        const θ = bearing * Math.PI / 180; // bearing in radians
+        const R = 6371000;
+        const δ = distance / R;
+        const φ1 = lat * Math.PI / 180;
+        const λ1 = lng * Math.PI / 180;
+        const θ = bearing * Math.PI / 180;
         
         const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
         const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
@@ -348,8 +383,11 @@ class GeolocationLineWalker {
         const lng = this.currentPosition.coords.longitude;
         const heading = this.currentHeading || 0;
         
-        // Create arrow pointing in the direction of the line
-        const arrowEnd = this.calculateDestination(lat, lng, heading, 5); // 5 meter arrow
+        const arrowEnd = this.calculateDestination(lat, lng, heading, 5);
+        
+        if (this.headingArrow) {
+            this.map.removeLayer(this.headingArrow);
+        }
         
         this.headingArrow = L.polyline([
             [lat, lng],
@@ -362,7 +400,7 @@ class GeolocationLineWalker {
     }
     
     updateHeadingArrow() {
-        if (!this.headingArrow || !this.currentPosition) return;
+        if (!this.headingArrow || !this.currentPosition || !this.isInitialized) return;
         
         const lat = this.currentPosition.coords.latitude;
         const lng = this.currentPosition.coords.longitude;
@@ -376,109 +414,106 @@ class GeolocationLineWalker {
     }
     
     startPositionWatch() {
-        // Ultra high accuracy tracking
+        // Less aggressive tracking to reduce lag
         const options = {
             enableHighAccuracy: true,
-            timeout: 15000, // 15 seconds
-            maximumAge: 500 // Max 0.5 seconds old
+            timeout: 10000,
+            maximumAge: 2000 // Allow 2-second old positions
         };
         
         this.watchId = navigator.geolocation.watchPosition(
             (position) => this.updatePosition(position),
             (error) => {
-                console.warn('Position watch error:', error);
-                // Show error but don't stop the app
-                this.updateStatus(`⚠️ Location tracking error: ${error.message}`);
+                // Don't spam errors - just continue with last position
+                console.warn('Position update failed:', error.message);
             },
             options
         );
     }
     
-    updatePosition(position) {
-        this.currentPosition = position;
-        const lat = position.coords.latitude;
-        const lng = position.coords.longitude;
-        const accuracy = position.coords.accuracy;
+    smoothPosition(newPosition) {
+        this.locationSmoothing.push(newPosition);
+        if (this.locationSmoothing.length > this.maxSmoothingPoints) {
+            this.locationSmoothing.shift();
+        }
         
-        console.log(`📍 Position update:`, {
-            lat: lat,
-            lng: lng,
-            accuracy: accuracy,
-            timestamp: new Date(position.timestamp)
-        });
+        // Return averaged position to reduce jumping
+        const avgLat = this.locationSmoothing.reduce((sum, pos) => sum + pos.coords.latitude, 0) / this.locationSmoothing.length;
+        const avgLng = this.locationSmoothing.reduce((sum, pos) => sum + pos.coords.longitude, 0) / this.locationSmoothing.length;
+        
+        return {
+            coords: {
+                latitude: avgLat,
+                longitude: avgLng,
+                accuracy: newPosition.coords.accuracy
+            },
+            timestamp: newPosition.timestamp
+        };
+    }
+    
+    updatePosition(position) {
+        // Smooth the position to reduce jumping
+        const smoothedPosition = this.smoothPosition(position);
+        this.currentPosition = smoothedPosition;
+        
+        const lat = smoothedPosition.coords.latitude;
+        const lng = smoothedPosition.coords.longitude;
+        const accuracy = position.coords.accuracy;
         
         this.updateLocationDisplay(lat, lng, accuracy);
         
-        // Update heading if available from position
-        if (position.coords.heading !== null && position.coords.heading !== undefined) {
-            this.currentHeading = position.coords.heading;
-            this.updateHeadingDisplay(this.currentHeading);
-            this.updateHeadingArrow();
-        }
-        
+        // Update markers with reduced frequency
         if (this.userMarker) {
             this.userMarker.setLatLng([lat, lng]);
         }
         
-        // Update accuracy circle
         if (this.accuracyCircle) {
             this.accuracyCircle.setLatLng([lat, lng]);
             this.accuracyCircle.setRadius(accuracy);
         }
         
+        // Update progress less frequently
         if (this.isInitialized) {
             this.updateProgress(lat, lng);
         }
+        
+        // Cache the position
+        this.cachePosition(position);
     }
     
     updateProgress(userLat, userLng) {
-        // FIX: Simplified and corrected projection calculation
         const projection = this.projectPointOntoLine(userLat, userLng);
         
         if (projection) {
-            console.log(`🎯 Projection:`, {
-                userPos: [userLat, userLng],
-                projectedPos: [projection.lat, projection.lng],
-                progress: projection.progress,
-                distance: projection.distance
-            });
-            
-            // Update progress line - FIX: Use actual line points for proper visualization
             const progressPoints = [];
             
             if (projection.progress <= 0) {
-                // No progress yet
                 progressPoints.push([this.linePoints[0].lat, this.linePoints[0].lng]);
             } else if (projection.progress >= 1) {
-                // Complete line
                 this.linePoints.forEach(point => {
                     progressPoints.push([point.lat, point.lng]);
                 });
             } else {
-                // Partial progress
                 progressPoints.push([this.linePoints[0].lat, this.linePoints[0].lng]);
                 progressPoints.push([projection.lat, projection.lng]);
             }
             
             this.progressLine.setLatLngs(progressPoints);
             
-            // Update progress display
             const progressPercent = Math.min(100, Math.max(0, projection.progress * 100));
             this.progressElement.textContent = `${progressPercent.toFixed(1)}%`;
             this.progressElement.className = progressPercent > 80 ? 'progress-complete' : progressPercent > 20 ? 'progress-partial' : 'progress-none';
             
-            // Update distance to line
             this.distanceElement.textContent = `${projection.distance.toFixed(1)}m`;
             
-            // Update status based on progress
             if (progressPercent >= 100) {
-                this.updateStatus('🎉 Congratulations! You completed the 40m line!');
+                this.updateStatus('🎉 Completed the 40m line!');
             } else if (progressPercent >= 80) {
-                this.updateStatus('🚶 Almost there! Keep going!');
+                this.updateStatus('🚶 Almost there!');
             } else if (progressPercent >= 50) {
-                this.updateStatus('👍 Great progress! You\'re halfway there!');
+                this.updateStatus('👍 Halfway there!');
             } else {
-                this.updateStatus('🚶‍♀️ Walking the line...');
+                this.updateStatus('🚶‍♀️ Walking...');
             }
         }
     }
@@ -489,8 +524,6 @@ class GeolocationLineWalker {
         const start = this.linePoints[0];
         const end = this.linePoints[this.linePoints.length - 1];
         
-        // FIX: Simplified projection using proper vector mathematics
-        // Convert coordinates to a local meter-based system
         const startPoint = { x: 0, y: 0 };
         const endPoint = {
             x: this.haversineDistance(start.lat, start.lng, start.lat, end.lng) * 
@@ -505,7 +538,6 @@ class GeolocationLineWalker {
                (userLat > start.lat ? 1 : -1)
         };
         
-        // Project user point onto the line vector
         const lineVector = { x: endPoint.x - startPoint.x, y: endPoint.y - startPoint.y };
         const userVector = { x: userPoint.x - startPoint.x, y: userPoint.y - startPoint.y };
         
@@ -513,17 +545,14 @@ class GeolocationLineWalker {
         const projectionLength = (userVector.x * lineVector.x + userVector.y * lineVector.y) / lineLength;
         const progress = Math.max(0, Math.min(1, projectionLength / lineLength));
         
-        // Calculate projected point coordinates
         const projectedPoint = {
             x: startPoint.x + progress * lineVector.x,
             y: startPoint.y + progress * lineVector.y
         };
         
-        // Convert back to lat/lng
         const projectedLat = start.lat + (projectedPoint.y / 111320);
         const projectedLng = start.lng + (projectedPoint.x / (111320 * Math.cos(start.lat * Math.PI / 180)));
         
-        // Calculate distance from user to projected point
         const distanceToLine = this.haversineDistance(userLat, userLng, projectedLat, projectedLng);
         
         return {
@@ -535,7 +564,7 @@ class GeolocationLineWalker {
     }
     
     haversineDistance(lat1, lng1, lat2, lng2) {
-        const R = 6371000; // Earth's radius in meters
+        const R = 6371000;
         const dLat = (lat2 - lat1) * Math.PI / 180;
         const dLng = (lng2 - lng1) * Math.PI / 180;
         const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
@@ -546,7 +575,7 @@ class GeolocationLineWalker {
     }
     
     updateLocationDisplay(lat, lng, accuracy) {
-        this.locationElement.textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)} (±${accuracy?.toFixed(1) || '?'}m)`;
+        this.locationElement.textContent = `${lat.toFixed(5)}, ${lng.toFixed(5)} (±${accuracy?.toFixed(0) || '?'}m)`;
     }
     
     updateHeadingDisplay(heading) {
@@ -554,7 +583,6 @@ class GeolocationLineWalker {
             const roundedHeading = Math.round(heading);
             let direction = '';
             
-            // Convert heading to compass direction
             if (heading >= 337.5 || heading < 22.5) direction = 'N';
             else if (heading >= 22.5 && heading < 67.5) direction = 'NE';
             else if (heading >= 67.5 && heading < 112.5) direction = 'E';
@@ -572,57 +600,42 @@ class GeolocationLineWalker {
     
     updateStatus(message) {
         this.statusElement.textContent = message;
-        console.log('Status:', message);
     }
     
     handleLocationError(error) {
         let message = '❌ Location error: ';
-        let suggestions = '';
         
         switch(error.code) {
             case error.PERMISSION_DENIED:
-                message += 'Location access denied.';
-                suggestions = '💡 Please enable location services and allow location access.';
+                message += 'Access denied. Please enable location.';
                 break;
             case error.POSITION_UNAVAILABLE:
-                message += 'Location information unavailable.';
+                message += 'GPS unavailable.';
                 if (this.isLocal) {
-                    suggestions = '💡 Try using HTTPS or enable location services. Use Demo Mode to test.';
-                } else {
-                    suggestions = '💡 Please check your GPS signal and try again.';
+                    message += ' Try demo mode.';
                 }
                 break;
             case error.TIMEOUT:
-                message += 'Location request timed out.';
-                suggestions = '💡 Please try again or check your connection.';
+                message += 'GPS timeout. Try again.';
                 break;
             default:
-                message += 'Unknown error occurred.';
+                message += 'Unknown error.';
                 break;
         }
         
-        // Retry if we haven't reached max attempts
-        if (this.locationAttempts < this.maxLocationAttempts && !this.isLocal) {
-            setTimeout(() => {
-                this.requestLocation();
-            }, 3000);
-            message += ` Retrying... (${this.locationAttempts}/${this.maxLocationAttempts})`;
-        }
-        
-        this.updateStatus(message + ' ' + suggestions);
-        console.error('Geolocation error:', error);
+        this.updateStatus(message);
     }
     
     centerMapOnUser() {
         if (this.currentPosition && this.userMarker) {
             const lat = this.currentPosition.coords.latitude;
             const lng = this.currentPosition.coords.longitude;
-            this.map.setView([lat, lng], 19);
+            this.map.setView([lat, lng], 18);
         }
     }
     
     resetLine() {
-        // Clear existing line and markers
+        // Clean up existing elements
         if (this.walkingLine) {
             this.map.removeLayer(this.walkingLine);
             this.walkingLine = null;
@@ -630,10 +643,6 @@ class GeolocationLineWalker {
         if (this.progressLine) {
             this.map.removeLayer(this.progressLine);
             this.progressLine = null;
-        }
-        if (this.accuracyCircle) {
-            this.map.removeLayer(this.accuracyCircle);
-            this.accuracyCircle = null;
         }
         if (this.headingArrow) {
             this.map.removeLayer(this.headingArrow);
@@ -644,7 +653,6 @@ class GeolocationLineWalker {
         this.linePoints = [];
         this.initialHeading = null;
         this.isInitialized = false;
-        this.locationAttempts = 0;
         
         // Stop watching position
         if (this.watchId) {
@@ -659,8 +667,12 @@ class GeolocationLineWalker {
         this.headingElement.textContent = '--°';
         document.getElementById('reset-btn').disabled = true;
         
-        // Restart the process with fresh location request
-        this.requestLocation();
+        // Quick restart with current position if available
+        if (this.currentPosition) {
+            this.requestDeviceOrientation();
+        } else {
+            this.requestLocation();
+        }
     }
 }
 
