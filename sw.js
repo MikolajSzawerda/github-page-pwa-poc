@@ -5,7 +5,7 @@ const isLocal = self.location.hostname === 'localhost' ||
 
 var GHPATH = isLocal ? '' : '/github-page-pwa-poc';
 var APP_PREFIX = 'glw_';
-var VERSION = 'version_003';
+var VERSION = 'version_004';
 
 // Dynamic URL list based on environment
 var URLS = isLocal ? [
