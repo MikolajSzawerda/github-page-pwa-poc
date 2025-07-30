@@ -10,6 +10,7 @@ class GeolocationLineWalker {
         this.progressLine = null;
         this.currentPosition = null;
         this.initialHeading = null;
+        this.currentHeading = null;
         this.watchId = null;
         this.isInitialized = false;
         this.isLocal = window.location.hostname === 'localhost' || 
@@ -18,6 +19,7 @@ class GeolocationLineWalker {
         
         this.statusElement = document.getElementById('status');
         this.locationElement = document.getElementById('current-location');
+        this.headingElement = document.getElementById('current-heading');
         this.progressElement = document.getElementById('progress');
         this.distanceElement = document.getElementById('distance-to-line');
         
@@ -111,12 +113,15 @@ class GeolocationLineWalker {
             coords: {
                 latitude: 37.7749,
                 longitude: -122.4194,
-                accuracy: 10
+                accuracy: 10,
+                heading: 45 // Demo heading (NE direction)
             },
             timestamp: Date.now()
         };
         
         this.updateStatus('🎮 Demo mode activated!');
+        this.currentHeading = 45;
+        this.updateHeadingDisplay(45);
         this.handleInitialPosition(demoPosition);
     }
     
@@ -126,7 +131,13 @@ class GeolocationLineWalker {
         const lng = position.coords.longitude;
         
         this.updateLocationDisplay(lat, lng);
-        this.map.setView([lat, lng], 19);
+        this.map.setView([lat, lng], 17); // Zoom out a bit for 10-meter intervals
+        
+        // Update heading if available from position
+        if (position.coords.heading !== null && position.coords.heading !== undefined) {
+            this.currentHeading = position.coords.heading;
+            this.updateHeadingDisplay(this.currentHeading);
+        }
         
         // Add user marker
         this.userMarker = L.marker([lat, lng], {
@@ -171,9 +182,19 @@ class GeolocationLineWalker {
             if (this.initialHeading === null && event.alpha !== null) {
                 clearTimeout(orientationTimeout);
                 this.initialHeading = event.alpha;
+                this.currentHeading = event.alpha;
+                this.updateHeadingDisplay(this.currentHeading);
                 this.createWalkingLine();
                 window.removeEventListener('deviceorientationabsolute', handleOrientation);
                 window.removeEventListener('deviceorientation', handleOrientation);
+            }
+        };
+        
+        // Continue listening for heading updates
+        const handleOrientationUpdate = (event) => {
+            if (event.alpha !== null) {
+                this.currentHeading = event.alpha;
+                this.updateHeadingDisplay(this.currentHeading);
             }
         };
         
@@ -181,11 +202,19 @@ class GeolocationLineWalker {
         window.addEventListener('deviceorientationabsolute', handleOrientation);
         window.addEventListener('deviceorientation', handleOrientation);
         
+        // Set up continuous heading updates after initial line creation
+        setTimeout(() => {
+            window.addEventListener('deviceorientationabsolute', handleOrientationUpdate);
+            window.addEventListener('deviceorientation', handleOrientationUpdate);
+        }, 4000);
+        
         this.updateStatus('🧭 Point your device in the direction you want to walk...');
     }
     
     createLineWithDefaultHeading() {
         this.initialHeading = 0; // Default to North
+        this.currentHeading = 0;
+        this.updateHeadingDisplay(0);
         this.createWalkingLine();
     }
     
@@ -196,10 +225,10 @@ class GeolocationLineWalker {
         const startLng = this.currentPosition.coords.longitude;
         const heading = this.initialHeading || 0;
         
-        // Create 5 points, each 1 meter apart
+        // Create 5 points, each 10 meters apart (changed from 1 meter)
         this.linePoints = [];
         for (let i = 0; i < 5; i++) {
-            const point = this.calculateDestination(startLat, startLng, heading, i * 1); // 1 meter intervals
+            const point = this.calculateDestination(startLat, startLng, heading, i * 10); // 10 meter intervals
             this.linePoints.push(point);
         }
         
@@ -213,7 +242,7 @@ class GeolocationLineWalker {
         // Start watching position
         this.startPositionWatch();
         
-        this.updateStatus('✅ Line created! Start walking towards the points.');
+        this.updateStatus('✅ Line created! Start walking towards the points (40m total).');
     }
     
     calculateDestination(lat, lng, bearing, distance) {
@@ -260,7 +289,7 @@ class GeolocationLineWalker {
                 })
             }).addTo(this.map);
             
-            marker.bindPopup(`Point ${index + 1}<br/>Distance: ${index} meters`);
+            marker.bindPopup(`Point ${index + 1}<br/>Distance: ${index * 10} meters`);
             this.lineMarkers.push(marker);
         });
     }
@@ -296,6 +325,12 @@ class GeolocationLineWalker {
         
         this.updateLocationDisplay(lat, lng);
         
+        // Update heading if available from position
+        if (position.coords.heading !== null && position.coords.heading !== undefined) {
+            this.currentHeading = position.coords.heading;
+            this.updateHeadingDisplay(this.currentHeading);
+        }
+        
         if (this.userMarker) {
             this.userMarker.setLatLng([lat, lng]);
         }
@@ -330,7 +365,7 @@ class GeolocationLineWalker {
             
             // Update status based on progress
             if (progressPercent >= 100) {
-                this.updateStatus('🎉 Congratulations! You completed the line!');
+                this.updateStatus('🎉 Congratulations! You completed the 40m line!');
             } else if (progressPercent >= 80) {
                 this.updateStatus('🚶 Almost there! Keep going!');
             } else if (progressPercent >= 50) {
@@ -398,6 +433,27 @@ class GeolocationLineWalker {
         this.locationElement.textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
     }
     
+    updateHeadingDisplay(heading) {
+        if (heading !== null && heading !== undefined) {
+            const roundedHeading = Math.round(heading);
+            let direction = '';
+            
+            // Convert heading to compass direction
+            if (heading >= 337.5 || heading < 22.5) direction = 'N';
+            else if (heading >= 22.5 && heading < 67.5) direction = 'NE';
+            else if (heading >= 67.5 && heading < 112.5) direction = 'E';
+            else if (heading >= 112.5 && heading < 157.5) direction = 'SE';
+            else if (heading >= 157.5 && heading < 202.5) direction = 'S';
+            else if (heading >= 202.5 && heading < 247.5) direction = 'SW';
+            else if (heading >= 247.5 && heading < 292.5) direction = 'W';
+            else if (heading >= 292.5 && heading < 337.5) direction = 'NW';
+            
+            this.headingElement.textContent = `${roundedHeading}° ${direction}`;
+        } else {
+            this.headingElement.textContent = '--°';
+        }
+    }
+    
     updateStatus(message) {
         this.statusElement.textContent = message;
         console.log('Status:', message);
@@ -437,7 +493,7 @@ class GeolocationLineWalker {
         if (this.currentPosition && this.userMarker) {
             const lat = this.currentPosition.coords.latitude;
             const lng = this.currentPosition.coords.longitude;
-            this.map.setView([lat, lng], 19);
+            this.map.setView([lat, lng], 17);
         }
     }
     
@@ -467,6 +523,7 @@ class GeolocationLineWalker {
         this.progressElement.textContent = '0%';
         this.progressElement.className = 'progress-none';
         this.distanceElement.textContent = '--';
+        this.headingElement.textContent = '--°';
         document.getElementById('reset-btn').disabled = true;
         
         // Restart the process
